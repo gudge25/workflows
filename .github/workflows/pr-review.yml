@@ -18,7 +18,7 @@ on:
       allowed_tools:
         description: "Comma-separated allowedTools for claude-code-action"
         type: string
-        default: "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*)"
+        default: "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*),Bash(git diff:*),Bash(git log:*)"
         required: false
     secrets:
       OPENROUTER_API_KEY:
@@ -36,7 +36,27 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 1
+          fetch-depth: 0
+
+      - name: Determine previously reviewed commit
+        id: prev_review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          previous_sha=$(gh pr view "$PR_NUMBER" \
+            --json reviews \
+            --jq '[.reviews[] | select(.body | test("^AI_REVIEW_(PASSED|BLOCKING)@[0-9a-f]{7,40}$"))] | last | .body | sub("^AI_REVIEW_(PASSED|BLOCKING)@"; "")')
+
+          # Only usable if that commit is still an ancestor of the current head
+          # (handles force-pushes/rebases where it would no longer apply).
+          if [ -n "$previous_sha" ] && git merge-base --is-ancestor "$previous_sha" HEAD 2>/dev/null; then
+            echo "previous_sha=$previous_sha" >> "$GITHUB_OUTPUT"
+            echo "Found previous reviewed commit: $previous_sha"
+          else
+            echo "previous_sha=" >> "$GITHUB_OUTPUT"
+            echo "No usable previous reviewed commit found - will review the full PR diff"
+          fi
 
       - name: Review PR (primary model)
         id: review_primary
@@ -54,8 +74,20 @@ jobs:
           prompt: &review_prompt |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
+            CURRENT HEAD COMMIT: ${{ github.event.pull_request.head.sha }}
+            PREVIOUSLY REVIEWED COMMIT: ${{ steps.prev_review.outputs.previous_sha }}
 
-            Review this pull request.
+            If PREVIOUSLY REVIEWED COMMIT is non-empty, this PR was already reviewed up through
+            that commit in an earlier run. Get ONLY the incremental changes since then with:
+
+              git diff ${{ steps.prev_review.outputs.previous_sha }} ${{ github.event.pull_request.head.sha }}
+
+            and review ONLY that incremental diff. Do not re-report findings about code that falls
+            outside this incremental diff, even if it is still part of the overall PR - it was already
+            reviewed in a previous run and either accepted or is a pre-existing issue already raised.
+
+            If PREVIOUSLY REVIEWED COMMIT is empty, this is the first review of this PR - use
+            `gh pr diff` to review the entire PR diff as usual.
 
             Focus on:
             - bugs and incorrect logic
@@ -76,20 +108,22 @@ jobs:
 
             Do not only describe the problem. Always explain exactly how to fix it.
 
-            If you find one or more significant issues that should block merging,
-            you MUST finish by running:
+            If you find one or more significant issues (in the diff you were told to review above)
+            that should block merging, you MUST finish by running:
 
-            gh pr review ${{ github.event.pull_request.number }} --request-changes --body "AI_REVIEW_BLOCKING"
+            gh pr review ${{ github.event.pull_request.number }} --request-changes --body "AI_REVIEW_BLOCKING@${{ github.event.pull_request.head.sha }}"
 
             If you find no significant blocking issues, you MUST finish by running:
 
-            gh pr review ${{ github.event.pull_request.number }} --comment --body "AI_REVIEW_PASSED"
+            gh pr review ${{ github.event.pull_request.number }} --comment --body "AI_REVIEW_PASSED@${{ github.event.pull_request.head.sha }}"
 
-            Do not finish without submitting exactly one of these two verdicts.
+            Do not finish without submitting exactly one of these two verdicts, and use the exact
+            commit SHA shown above (CURRENT HEAD COMMIT) in the verdict body - do not substitute a
+            different SHA.
 
           claude_args: |
             --model ${{ inputs.model || 'nvidia/nemotron-3-ultra-550b-a55b:free' }}
-            --allowedTools "${{ inputs.allowed_tools || 'mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*)' }}"
+            --allowedTools "${{ inputs.allowed_tools || 'mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*),Bash(git diff:*),Bash(git log:*)' }}"
 
       - name: Review PR (fallback model)
         if: steps.review_primary.outcome != 'success'
@@ -104,7 +138,7 @@ jobs:
 
           claude_args: |
             --model ${{ inputs.model_fallback || 'poolside/laguna-s-2.1:free' }}
-            --allowedTools "${{ inputs.allowed_tools || 'mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*)' }}"
+            --allowedTools "${{ inputs.allowed_tools || 'mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*),Bash(git diff:*),Bash(git log:*)' }}"
 
       - name: Enforce AI review verdict
         env:
@@ -113,16 +147,16 @@ jobs:
         run: |
           verdict=$(gh pr view "$PR_NUMBER" \
             --json reviews \
-            --jq '[.reviews[] | select(.body == "AI_REVIEW_BLOCKING" or .body == "AI_REVIEW_PASSED")] | last | .body')
+            --jq '[.reviews[] | select(.body | test("^AI_REVIEW_(PASSED|BLOCKING)@[0-9a-f]{7,40}$"))] | last | .body')
 
           echo "AI verdict: $verdict"
 
-          if [ "$verdict" = "AI_REVIEW_BLOCKING" ]; then
+          if [[ "$verdict" == AI_REVIEW_BLOCKING@* ]]; then
             echo "::error::AI review found blocking issues"
             exit 1
           fi
 
-          if [ "$verdict" != "AI_REVIEW_PASSED" ]; then
+          if [[ "$verdict" != AI_REVIEW_PASSED@* ]]; then
             echo "::error::AI reviewer did not submit a valid verdict"
             exit 1
           fi
