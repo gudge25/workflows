@@ -18,7 +18,7 @@ on:
       allowed_tools:
         description: "Comma-separated allowedTools for claude-code-action"
         type: string
-        default: "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*),Bash(git diff:*),Bash(git log:*)"
+        default: "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*),Bash(git diff:*),Bash(git log:*),Bash(gh api graphql:*)"
         required: false
     secrets:
       OPENROUTER_API_KEY:
@@ -107,6 +107,52 @@ jobs:
             with `confirmed: true` to post the issue directly on the relevant code.
 
             Do not only describe the problem. Always explain exactly how to fix it.
+
+            After reviewing the incremental diff above, also check whether any PREVIOUSLY raised
+            review threads on this PR are now fixed, even if your fix for them landed on a
+            different line than the one the thread is anchored to (anchored-line position does not
+            change just because a nearby line was edited, so a thread can stay open-looking even
+            after the issue it describes is resolved).
+
+            1. Fetch this PR's review threads:
+
+               gh api graphql -f query='
+               query {
+                 repository(owner: "${{ github.repository_owner }}", name: "${{ github.event.repository.name }}") {
+                   pullRequest(number: ${{ github.event.pull_request.number }}) {
+                     reviewThreads(first: 100) {
+                       nodes {
+                         id
+                         isResolved
+                         path
+                         line
+                         comments(first: 1) { nodes { body } }
+                       }
+                     }
+                   }
+                 }
+               }'
+
+            2. For each thread where isResolved is false, read its comment body to understand what
+               issue was raised, then look at the CURRENT full content of the file it points to
+               (not just the incremental diff - the issue may have been fixed on a nearby line) to
+               judge whether that specific issue is actually fixed now.
+
+            3. If it is fixed, resolve it:
+
+               gh api graphql -f query='
+               mutation {
+                 resolveReviewThread(input: {threadId: "<thread id from step 1>"}) {
+                   thread { isResolved }
+                 }
+               }'
+
+            4. If it is not fixed, or you are not confident it is fixed, leave the thread open -
+               do not resolve it. Do not resolve a thread just because its file changed; resolve it
+               only when the specific issue it describes no longer applies.
+
+            Do this for every unresolved thread on the PR, not only ones touching the diff you
+            reviewed this run.
 
             If you find one or more significant issues (in the diff you were told to review above)
             that should block merging, you MUST finish by running:
