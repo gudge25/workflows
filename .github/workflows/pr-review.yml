@@ -46,7 +46,7 @@ jobs:
         run: |
           previous_sha=$(gh pr view "$PR_NUMBER" \
             --json reviews \
-            --jq '[.reviews[] | select(.body | test("^AI_REVIEW_(PASSED|BLOCKING)@[0-9a-f]{7,40}$"))] | last | .body | sub("^AI_REVIEW_(PASSED|BLOCKING)@"; "")')
+            --jq '[.reviews[] | select(.body | test("^AI_REVIEW_(PASSED|BLOCKING)@[0-9a-f]{7,40}$"))] | last | (.body // "") | sub("^AI_REVIEW_(PASSED|BLOCKING)@"; "")')
 
           # Only usable if that commit is still an ancestor of the current head
           # (handles force-pushes/rebases where it would no longer apply).
