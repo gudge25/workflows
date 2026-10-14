@@ -1,0 +1,21 @@
+# Copy this file into another repo as .github/workflows/pr-review.yml
+# to reuse the centralized Claude PR review workflow.
+#
+# Requirements in the calling repo:
+# - An OPENROUTER_API_KEY secret (repo or org level), or pass it explicitly
+#   instead of using `secrets: inherit`.
+
+name: Claude Auto Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  review:
+    uses: gudge25/workflows/.github/workflows/pr-review.yml@main
+    secrets: inherit
+    # Optional overrides:
+    # with:
+    #   model: "some/other-model:free"
+    #   allowed_tools: "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*)"
