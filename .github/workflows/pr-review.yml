@@ -127,13 +127,9 @@ jobs:
 
             Do not only describe the problem. Always explain exactly how to fix it.
 
-            After reviewing the incremental diff above, also check whether any PREVIOUSLY raised
-            review threads on this PR are now fixed, even if your fix for them landed on a
-            different line than the one the thread is anchored to (anchored-line position does not
-            change just because a nearby line was edited, so a thread can stay open-looking even
-            after the issue it describes is resolved).
+            BEFORE posting any new inline comment, do this first:
 
-            1. Fetch this PR's review threads:
+            1. Fetch this PR's EXISTING review threads:
 
                gh api graphql -f query='
                query {
@@ -154,24 +150,38 @@ jobs:
 
             2. For each thread where isResolved is false, read its comment body to understand what
                issue was raised, then look at the CURRENT full content of the file it points to
-               (not just the incremental diff - the issue may have been fixed on a nearby line) to
-               judge whether that specific issue is actually fixed now.
+               (not just the incremental diff - the issue may have been fixed on a nearby line, not
+               necessarily the exact anchored line) to judge whether that specific issue is actually
+               fixed now.
 
-            3. If it is fixed, resolve it:
+               - If it IS fixed: resolve it with
+                 gh api graphql -f query='
+                 mutation {
+                   resolveReviewThread(input: {threadId: "<thread id from step 1>"}) {
+                     thread { isResolved }
+                   }
+                 }'
+               - If it is NOT fixed, or you are not confident: take NO action on it at all. Do not
+                 resolve it, and - this is important - do NOT post any new comment about it either,
+                 not even to say it's "still unfixed" or "confirmed not fixed". A thread you leave
+                 unresolved already communicates "still open" by itself; a second comment repeating
+                 the same finding is a duplicate, not new information, and must not be created.
 
-               gh api graphql -f query='
-               mutation {
-                 resolveReviewThread(input: {threadId: "<thread id from step 1>"}) {
-                   thread { isResolved }
-                 }
-               }'
+            Do this check for every unresolved thread on the PR, not only ones touching the diff you
+            are about to review below - this step must happen regardless of whether that diff is
+            empty, trivial, or substantial.
 
-            4. If it is not fixed, or you are not confident it is fixed, leave the thread open -
-               do not resolve it. Do not resolve a thread just because its file changed; resolve it
-               only when the specific issue it describes no longer applies.
+            ONLY AFTER that: review the incremental diff for genuinely new issues, following these
+            rules strictly:
 
-            Do this for every unresolved thread on the PR, not only ones touching the diff you
-            reviewed this run.
+            - Before posting a new comment about an issue, compare it against the EXISTING unresolved
+              threads you just fetched above (by file and by the substance of the issue, not just by
+              exact line number, since a later commit can shift what's on which line). If an existing
+              unresolved thread already describes the same underlying issue - anywhere in the file,
+              not only on the exact line you'd otherwise comment on - do NOT post a new comment for
+              it. It is already tracked; posting again creates a duplicate.
+            - Only post a new comment for an issue that has no existing open thread describing it
+              anywhere in the PR.
 
             If you find one or more significant issues (in the diff you were told to review above)
             that should block merging, you MUST finish by running:
