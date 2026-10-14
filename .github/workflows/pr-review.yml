@@ -43,6 +43,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           previous_sha=$(gh pr view "$PR_NUMBER" \
             --json reviews \
@@ -50,16 +51,34 @@ jobs:
 
           # Only usable if that commit is still an ancestor of the current head
           # (handles force-pushes/rebases where it would no longer apply).
-          if [ -n "$previous_sha" ] && git merge-base --is-ancestor "$previous_sha" HEAD 2>/dev/null; then
+          if [ -n "$previous_sha" ] && git merge-base --is-ancestor "$previous_sha" "$HEAD_SHA" 2>/dev/null; then
             echo "previous_sha=$previous_sha" >> "$GITHUB_OUTPUT"
             echo "Found previous reviewed commit: $previous_sha"
           else
+            previous_sha=""
             echo "previous_sha=" >> "$GITHUB_OUTPUT"
             echo "No usable previous reviewed commit found - will review the full PR diff"
           fi
 
+          # Decide deterministically (no model judgement involved) whether there is
+          # anything new to review at all. Without this, a re-run (or any trigger)
+          # with no actual code change since the last review would still invoke the
+          # model, which may not reliably recognize "nothing changed" on its own and
+          # could re-review the whole PR from scratch, re-posting old findings.
+          if [ -z "$previous_sha" ]; then
+            echo "has_new_changes=true" >> "$GITHUB_OUTPUT"
+            echo "No previous review - first-time review, has_new_changes=true"
+          elif [ -n "$(git diff --name-only "$previous_sha" "$HEAD_SHA")" ]; then
+            echo "has_new_changes=true" >> "$GITHUB_OUTPUT"
+            echo "Code changed since $previous_sha - has_new_changes=true"
+          else
+            echo "has_new_changes=false" >> "$GITHUB_OUTPUT"
+            echo "No code changes since $previous_sha (same commit, or an empty/no-op diff) - has_new_changes=false, skipping review"
+          fi
+
       - name: Review PR (primary model)
         id: review_primary
+        if: steps.prev_review.outputs.has_new_changes == 'true'
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         env: &review_env
@@ -169,10 +188,10 @@ jobs:
 
           claude_args: |
             --model ${{ inputs.model || 'nvidia/nemotron-3-ultra-550b-a55b:free' }}
-            --allowedTools "${{ inputs.allowed_tools || 'mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*),Bash(git diff:*),Bash(git log:*)' }}"
+            --allowedTools "${{ inputs.allowed_tools || 'mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*),Bash(git diff:*),Bash(git log:*),Bash(gh api graphql:*)' }}"
 
       - name: Review PR (fallback model)
-        if: steps.review_primary.outcome != 'success'
+        if: steps.prev_review.outputs.has_new_changes == 'true' && steps.review_primary.outcome != 'success'
         uses: anthropics/claude-code-action@v1
         env: *review_env
 
@@ -184,7 +203,7 @@ jobs:
 
           claude_args: |
             --model ${{ inputs.model_fallback || 'poolside/laguna-s-2.1:free' }}
-            --allowedTools "${{ inputs.allowed_tools || 'mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*),Bash(git diff:*),Bash(git log:*)' }}"
+            --allowedTools "${{ inputs.allowed_tools || 'mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*),Bash(git diff:*),Bash(git log:*),Bash(gh api graphql:*)' }}"
 
       - name: Enforce AI review verdict
         env:
